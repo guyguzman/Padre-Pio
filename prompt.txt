@@ -1,0 +1,21 @@
+I have a 366 page pdf file where each page stands alone.
+
+I want to extract the text of each page and place into a JSON file. 
+The JSON file will be an array of 366 objects. 
+Each object will be a page.
+Each page will have a page number, text and metadata fields. 
+Page number will be sequential starting at 1. 
+Extract the text in the natural reading order.
+
+Ignore any blocks of text that contain a month name and do not contain a '('.
+If a section of text contains this '(' followed by a month name, it will be considered metadata and added to the JSON.
+Any text that does not contain a month name will be considered bodytext.
+
+For the bodytext, separate the text into paragraphs by infering by the extra vertical spacing. 
+Remove any line feeds. 
+Group the sentences of each paragraph into a single string. A paragraph is a group of sentences separated from
+other paragraphs by some vertical space. Add each paragraphto the paragraphs array.
+
+Can you create the python code to extract the valid text of where each page is a member of an JSON array. 
+For each page, the individual paragraphs are in their own array named paragraphs and the last the text block is named metadata. 
+The input file is 'padrePioLetters.pdf' and the output json file is 'padrePioLetters.json'.
