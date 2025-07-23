@@ -1,97 +1,79 @@
-#!/usr/bin/env python3
-"""
-extract_letters.py
-Read a 366-page PDF of letters, structure each page into
-date / paragraphs / metadata, and write extracted_pages.json
-"""
-
-import re
+import pdfplumber
 import json
-from pypdf import PdfReader
+import re
 
-INPUT_PDF  = "Letters.pdf"
-OUTPUT_JSON = "extracted_pages.json"
-
-# ------------------------------------------------------------------
-# Helper regexes
-MONTH_NAMES = {
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-}
-CAPITALIZED_MONTH_RE = re.compile(r"^(January|February|March|April|May|June|"
-                                  r"July|August|September|October|November|December)$")
-
-DATE_RE = re.compile(
-    r"^(January|February|March|April|May|June|"
-    r"July|August|September|October|November|December)\s+"
-    r"(?:[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)$"
-)
-
-def is_capitalized_month(text: str) -> bool:
-    return bool(CAPITALIZED_MONTH_RE.match(text.strip()))
-
-def is_date(text: str) -> bool:
-    return bool(DATE_RE.match(text.strip()))
-# ------------------------------------------------------------------
-
-def parse_page(text: str):
+def extract_letters_to_json(pdf_path, json_path):
     """
-    Turn raw page text into (date, paragraphs, metadata).
-    Paragraphs are split on blank lines.
+    Extract structured text from a PDF file containing 366 pages of letters.
+    Each page has a consistent format:
+    - A capitalized month name (ignored)
+    - A date in the format "Month Day(st/nd/rd/th)" (e.g., "January 1st")
+    - Paragraphs of the letter
+    - A final metadata block
+
+    The function extracts the date, paragraphs, and metadata into a JSON array.
     """
-    lines = text.splitlines()
-    # Split into non-empty blocks/paragraphs
-    blocks = []
-    current = []
-    for ln in lines:
-        stripped = ln.strip()
-        if stripped:
-            current.append(stripped)
-        else:
-            if current:
-                blocks.append(" ".join(current))
-                current = []
-    if current:
-        blocks.append(" ".join(current))
+    extracted_pages = []
 
-    # Remove blocks that are just a capitalized month
-    blocks = [b for b in blocks if not is_capitalized_month(b)]
+    # Regular expression to match the date line (e.g., "January 1st")
+    date_pattern = re.compile(
+        r'^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(st|nd|rd|th)$',
+        re.IGNORECASE
+    )
 
-    date_block = None
-    date_idx   = None
-    for idx, blk in enumerate(blocks):
-        if is_date(blk):
-            date_block = blk
-            date_idx   = idx
-            break
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text()
+            if not text:
+                continue  # Skip empty pages
 
-    if date_block is None:
-        # Fallback: first non-empty block becomes date
-        date_block = blocks[0] if blocks else ""
-        date_idx   = 0
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            if not lines:
+                continue  # Skip if no content
 
-    paragraphs = blocks[date_idx+1:-1]   # between date and last block
-    metadata   = blocks[-1] if blocks else ""
+            # Find the date line index
+            date_index = None
+            for i, line in enumerate(lines):
+                if date_pattern.match(line):
+                    date_index = i
+                    break
 
-    return date_block, paragraphs, metadata
+            if date_index is None:
+                # Handle cases where date is not found
+                print(f"Warning: Date not found on page {page_num}. Skipping.")
+                continue
 
-def main():
-    reader = PdfReader(INPUT_PDF)
-    out_pages = []
+            date = lines[date_index]
 
-    for page_obj in reader.pages:
-        raw_text = page_obj.extract_text() or ""
-        date, paras, meta = parse_page(raw_text)
-        out_pages.append({
-            "date": date,
-            "paragraphs": paras,
-            "metadata": meta
-        })
+            # Extract paragraphs (everything after the date until the last line)
+            paragraphs_start = date_index + 1
+            paragraphs_end = len(lines) - 1  # Exclude the last line (metadata)
 
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(out_pages, f, indent=2, ensure_ascii=False)
+            if paragraphs_end <= paragraphs_start:
+                # Handle cases where there might be no paragraphs
+                paragraphs = []
+            else:
+                paragraphs = lines[paragraphs_start:paragraphs_end]
 
-    print(f"Extracted {len(out_pages)} pages → {OUTPUT_JSON}")
+            # The last line is the metadata
+            metadata = lines[-1] if lines else ""
 
+            # Structure the page data
+            page_data = {
+                "page": page_num,
+                "date": date,
+                "paragraphs": paragraphs,
+                "metadata": metadata
+            }
+
+            extracted_pages.append(page_data)
+
+    # Write the extracted data to JSON file
+    with open(json_path, 'w', encoding='utf-8') as json_file:
+        json.dump(extracted_pages, json_file, indent=4, ensure_ascii=False)
+
+    print(f"Successfully extracted {len(extracted_pages)} pages to '{json_path}'.")
+
+# Usage
 if __name__ == "__main__":
-    main()
+    extract_letters_to_json('Letters.pdf', 'extracted_pages.json')
