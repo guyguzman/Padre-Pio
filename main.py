@@ -1,99 +1,159 @@
 #!/usr/bin/env python3
 """
-extract_letters.py
+extract_padre_pio.py
+Read `padrePioLetters.pdf` and write `padrePioLetters.json`.
 
-Extract a 366-page PDF of identical-form letters into a JSON file.
-
-Input : Letters.pdf
-Output: extracted_pages.json
+Rules implemented
+-----------------
+1. Each page becomes one JSON object.
+2. Page numbers are 1 … 366.
+3. Ignore any text block that
+      – contains a month name, and
+      – does NOT contain '('
+4. A text block that contains '(' followed by a month name is *metadata*.
+5. Everything else (text without any month name) is body text.
+6. Body text is split into paragraphs by vertical spacing.
+   - Line-feeds inside a paragraph are removed.
+   - Each paragraph becomes one string in the `paragraphs` array.
+7. The last metadata block on the page (if any) is stored under the key
+   `metadata`.
 """
 
 import json
 import re
 from pathlib import Path
+from typing import List, Dict, Tuple
 
-import pdfplumber  # pip install pdfplumber
+import PyPDF2
 
-# ------------------------------------------------------------------
-# Helper regexes
-# ------------------------------------------------------------------
-MONTH_NAMES = {
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MONTHS = {
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
 }
+MONTH_RE = re.compile(r"\b(" + "|".join(MONTHS) + r")\b", re.IGNORECASE)
 
-DATE_RE = re.compile(
-    rf"\b({'|'.join(MONTH_NAMES)})\s+([1-9]|[12][0-9]|3[01])(st|nd|rd|th)\b"
-)
+INPUT_FILE  = Path("padrePioLetters.pdf")
+OUTPUT_FILE = Path("padrePioLetters.json")
 
-# ------------------------------------------------------------------
-# Core extraction function
-# ------------------------------------------------------------------
-def extract_page(page: pdfplumber.page.Page) -> dict:
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def contains_month(text: str) -> bool:
+    """True if any month name appears in the text."""
+    return bool(MONTH_RE.search(text))
+
+def contains_paren_month(text: str) -> bool:
+    """True if text contains '(' and a month name somewhere after it."""
+    # Simple check: presence of '(' and a month *anywhere* after it.
+    if "(" not in text:
+        return False
+    after_paren = text.split("(", 1)[1]
+    return contains_month(after_paren)
+
+def split_into_paragraphs(lines: List[str]) -> List[str]:
     """
-    Extract one page and return a dict with keys:
-        page      : int
-        date      : str
-        paragraphs: list[str]
-        metadata  : str
+    Group consecutive non-empty lines into paragraphs.
+    Blank lines (or vertical gaps represented as empty strings) are paragraph
+    separators.
     """
-    # 1. All text blocks on the page
-    blocks = [b for b in page.extract_text_lines() if b["text"].strip()]
-    if not blocks:
-        return {"page": page.page_number, "date": "", "paragraphs": [], "metadata": ""}
+    paragraphs = []
+    current = []
 
-    # 2. Filter out standalone month names
-    filtered = []
-    for b in blocks:
-        t = b["text"].strip()
-        if t in MONTH_NAMES:
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+        else:
+            current.append(stripped)
+
+    if current:
+        paragraphs.append(" ".join(current))
+
+    return paragraphs
+
+def extract_page(page: PyPDF2.PageObject) -> Tuple[List[str], List[str]]:
+    """
+    Extract text blocks from a single PDF page.
+
+    Returns (metadata_blocks, body_blocks)
+    """
+    # PyPDF2's extract_text() returns a single string.
+    # We split it into lines and then group into blocks by vertical gaps.
+    text = page.extract_text()
+    lines = text.splitlines()
+    metadata_blocks, body_blocks = [], []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
             continue
-        filtered.append(t)
 
-    # 3. Find the date block (first one matching DATE_RE)
-    date_idx = None
-    date_str = ""
-    for idx, t in enumerate(filtered):
-        if DATE_RE.match(t):
-            date_idx = idx
-            date_str = t
-            break
-    if date_idx is None:  # fallback – treat first block as date
-        date_idx = 0
-        date_str = filtered[0] if filtered else ""
+        if contains_paren_month(line):
+            metadata_blocks.append(line)
+        elif contains_month(line):
+            # Ignore blocks with month but no '('
+            continue
+        else:
+            # Body text
+            body_blocks.append(line)
 
-    # 4. Everything between date and last block = paragraphs
-    #    After stripping, drop empty strings
-    body_end = len(filtered) - 1  # last block reserved for metadata
-    paragraphs = [p for p in (p.strip() for p in filtered[date_idx + 1 : body_end]) if p]
+    return metadata_blocks, body_blocks
 
-    # 5. Last block = metadata
-    metadata = filtered[-1].strip() if filtered else ""
+# ---------------------------------------------------------------------------
+# Main routine
+# ---------------------------------------------------------------------------
 
-    return {
-        "page": page.page_number,
-        "date": date_str,
-        "paragraphs": paragraphs,
-        "metadata": metadata,
-    }
+def main() -> None:
+    if not INPUT_FILE.exists():
+        raise SystemExit(f"Input file not found: {INPUT_FILE}")
 
-# ------------------------------------------------------------------
-# Main driver
-# ------------------------------------------------------------------
-def main():
-    pdf_path = Path("Letters.pdf")
-    json_path = Path("extracted_pages.json")
+    pages: List[Dict] = []
 
-    all_pages = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for p in pdf.pages:
-            all_pages.append(extract_page(p))
+    with INPUT_FILE.open("rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        total_pages = len(reader.pages)
 
-    with json_path.open("w", encoding="utf-8") as f_out:
-        json.dump(all_pages, f_out, indent=2, ensure_ascii=False)
+        # Sanity check: 366 pages expected
+        if total_pages != 366:
+            print(
+                f"Warning: PDF has {total_pages} pages, "
+                "but 366 pages were expected."
+            )
 
-    print(f"✅ Done. Wrote {len(all_pages)} pages to {json_path}")
+        for idx in range(total_pages):
+            page_obj = reader.pages[idx]
+            meta_blocks, body_blocks = extract_page(page_obj)
+            if(idx == 1): print(f"{meta_blocks}, {body_blocks}")
 
-# ------------------------------------------------------------------
+            # Join body blocks into one string and split into paragraphs
+            body_text = "\n".join(body_blocks)
+            paragraphs = split_into_paragraphs(body_text.splitlines())
+
+            # Last metadata block on this page (if any)
+            metadata = meta_blocks[-1] if meta_blocks else None
+
+            pages.append(
+                {
+                    "page_number": idx + 1,
+                    "paragraphs": paragraphs,
+                    "metadata": metadata,
+                }
+            )
+
+    # Write the final JSON
+    with OUTPUT_FILE.open("w", encoding="utf-8") as out:
+        json.dump(pages, out, ensure_ascii=False, indent=2)
+
+    print(f"Done. Wrote {len(pages)} pages to {OUTPUT_FILE}")
+
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     main()
